@@ -117,6 +117,30 @@ class Database:
             ).fetchone()
             return dict(row)
 
+    def create_alerts(self, direction: str, thresholds: list[Decimal]) -> list[dict]:
+        """Create a batch of thresholds in one transaction."""
+        if direction not in {"below", "above"}:
+            raise ValueError("Unsupported alert direction.")
+        if not thresholds:
+            return []
+        now = self._now()
+        created: list[dict] = []
+        with self.connection() as conn:
+            for threshold in thresholds:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO alerts(direction, threshold, active, triggered,
+                                       trigger_count, created_at, updated_at)
+                    VALUES (?, ?, 1, 0, 0, ?, ?)
+                    """,
+                    (direction, str(threshold), now, now),
+                )
+                row = conn.execute(
+                    "SELECT * FROM alerts WHERE id = ?", (cursor.lastrowid,)
+                ).fetchone()
+                created.append(dict(row))
+        return created
+
     def list_alerts(self, active_only: bool = False) -> list[dict]:
         query = "SELECT * FROM alerts"
         if active_only:
