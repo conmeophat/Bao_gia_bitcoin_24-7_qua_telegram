@@ -6,6 +6,9 @@ Theo dõi BTC-USDT Spot trên OKX và gửi cảnh báo Telegram khi giá khớp
 - OKX public WebSocket tickers là nguồn giá chính; REST ticker kiểm tra đối chiếu định kỳ.
 - So sánh giá bằng Decimal, không dùng float cho quyết định ngưỡng.
 - SQLite lưu ngưỡng, trạng thái đã kích hoạt và hàng đợi thông báo.
+- Hỗ trợ nhập hàng loạt ngưỡng DCA: tối đa 100 mức trong một lệnh, tối đa 1.000 cảnh báo đang bật.
+- Tự bỏ qua các mức cùng chiều đã tồn tại và đang bật để tránh tạo cảnh báo trùng.
+- `/list` và `/levels` chia nhóm ngưỡng mua phía dưới / ngưỡng phía trên, tự chia trang khi danh sách dài.
 - Tự kết nối lại khi WebSocket mất kết nối.
 - Không cần OKX API key vì chỉ đọc dữ liệu thị trường công khai.
 
@@ -51,19 +54,54 @@ Dịch vụ cloud chạy độc lập với máy tính cá nhân. Gói hosting c
 
 ## 4. Lệnh Telegram
 
+### Tạo nhiều ngưỡng mua DCA (giá phía dưới)
+
+Có thể nhập nhiều mức giá trong **một lệnh**. Mỗi mức được tạo thành một cảnh báo độc lập:
+
+```text
+/below 65000 64000 63000 62000
+```
+
+Hoặc phân tách bằng dấu phẩy:
+
+```text
+/below 65000,64000,63000,62000
+```
+
+Bot tạo bốn cảnh báo: BTC-USDT ≤ 65.000; ≤ 64.000; ≤ 63.000; ≤ 62.000 USDT. Khi giá lần lượt đi xuống từng mức, từng cảnh báo sẽ được gửi riêng. Cách này phù hợp để theo dõi nhiều vùng giá mua DCA.
+
+### Tạo nhiều ngưỡng phía trên
+
+```text
+/above 70000 71000 72000
+```
+
+Hoặc:
+
+```text
+/above 70000,71000,72000
+```
+
+### Quản lý
+
 | Lệnh | Ý nghĩa |
 |---|---|
-| /start hoặc /help | Hướng dẫn |
-| /below 60000 | Báo khi giá BTC-USDT <= 60.000 USDT |
-| /above 70000 | Báo khi giá BTC-USDT >= 70.000 USDT |
-| /price | Giá OKX gần nhất |
-| /list | Danh sách ngưỡng |
-| /pause 1 | Tạm dừng cảnh báo số 1 |
-| /resume 1 | Bật lại cảnh báo số 1 |
-| /delete 1 | Xóa cảnh báo số 1 |
-| /status | Trạng thái kết nối và giá mới nhất |
+| `/start` hoặc `/help` | Hướng dẫn sử dụng |
+| `/price` | Giá OKX gần nhất |
+| `/list` hoặc `/levels` | Danh sách, chia nhóm phía dưới/phía trên |
+| `/pause 1` | Tạm dừng cảnh báo số 1 |
+| `/resume 1` | Bật lại cảnh báo số 1 |
+| `/delete 1` | Xóa cảnh báo số 1 |
+| `/status` | Trạng thái kết nối và độ mới dữ liệu |
 
-Có thể tạo nhiều ngưỡng cùng lúc. Một ngưỡng chỉ gửi một thông báo cho mỗi lần giá đi vào vùng điều kiện. Ví dụ /below 60000: khi giá xuống 60.000 hoặc thấp hơn thì báo một lần; sau đó phải tăng lên trên 60.000 rồi giảm xuống 60.000 hoặc thấp hơn mới báo lần kế tiếp.
+### Giới hạn và chống trùng
+
+- Tối đa 100 mức giá trong một lệnh Telegram.
+- Tối đa 1.000 cảnh báo đang bật trên toàn hệ thống.
+- Các mức giống nhau trong cùng một lệnh được tự động gộp.
+- Một mức cùng chiều đã tồn tại và đang bật sẽ không được tạo trùng.
+- Một cảnh báo chỉ gửi một lần khi giá đi vào vùng điều kiện. Muốn cảnh báo có thể kích hoạt lại, giá phải quay ra ngoài điều kiện rồi đi vào lần nữa.
+- Khi nhập nhiều giá, dùng số liền như `65000`, không dùng dấu phân cách hàng nghìn. Có thể ngăn cách bằng dấu cách, dấu phẩy hoặc dấu chấm phẩy.
 
 ## Nguồn giá
 - Instrument: BTC-USDT, thị trường Spot.
