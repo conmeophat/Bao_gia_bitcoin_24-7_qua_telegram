@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from database import Database
+from telegram_bot import TelegramBot
 
 
 class AlertDatabaseTests(unittest.TestCase):
@@ -61,6 +62,47 @@ class AlertDatabaseTests(unittest.TestCase):
 
         self.assertTrue(self.db.delete_alert(alert["id"]))
         self.assertEqual(len(self.db.pending_notifications()), 0)
+
+    def test_batch_alerts_create_independent_dca_levels(self) -> None:
+        created = self.db.create_alerts(
+            "below",
+            [Decimal("65000"), Decimal("64000"), Decimal("63000")],
+        )
+        self.assertEqual(len(created), 3)
+        self.assertEqual(
+            [row["threshold"] for row in self.db.list_alerts()],
+            ["65000", "64000", "63000"],
+        )
+
+        self.db.record_and_evaluate(Decimal("64500"), 5100, "test")
+        pending = self.db.pending_notifications()
+        self.assertEqual(len(pending), 1)
+        self.assertIn("65,000 USDT", pending[0]["message"])
+
+    def test_parse_multiple_thresholds_with_spaces_and_commas(self) -> None:
+        self.assertEqual(
+            TelegramBot._parse_thresholds("65000 64000 63000"),
+            [Decimal("65000"), Decimal("64000"), Decimal("63000")],
+        )
+        self.assertEqual(
+            TelegramBot._parse_thresholds("65000,64000,63000"),
+            [Decimal("65000"), Decimal("64000"), Decimal("63000")],
+        )
+        self.assertEqual(
+            TelegramBot._parse_thresholds("65000;64000;63000"),
+            [Decimal("65000"), Decimal("64000"), Decimal("63000")],
+        )
+
+    def test_parse_thresholds_deduplicates_and_preserves_order(self) -> None:
+        self.assertEqual(
+            TelegramBot._parse_thresholds("65000,64000,65000,63000"),
+            [Decimal("65000"), Decimal("64000"), Decimal("63000")],
+        )
+
+    def test_parse_thresholds_rejects_more_than_100_values(self) -> None:
+        raw = " ".join(str(70000 - index) for index in range(101))
+        with self.assertRaises(ValueError):
+            TelegramBot._parse_thresholds(raw)
 
     def test_paused_alert_does_not_fire(self) -> None:
         alert = self.db.create_alert("below", Decimal("60000"))
