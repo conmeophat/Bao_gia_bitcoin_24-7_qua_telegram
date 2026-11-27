@@ -5,13 +5,15 @@ import logging
 import time
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import aiohttp
 
 from config import format_price, parse_price
 from database import Database
-from engine import PriceEngine
+if TYPE_CHECKING:
+    from engine import PriceEngine
 
 
 logger = logging.getLogger(__name__)
