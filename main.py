@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 
 import aiohttp
@@ -24,6 +25,21 @@ def configure_logging() -> None:
 
 async def run() -> None:
     load_dotenv()
+    missing = [
+        name
+        for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+        if not os.getenv(name, "").strip()
+    ]
+    if missing:
+        logging.getLogger(__name__).error(
+            "SETUP REQUIRED: add %s to the service Variables, then redeploy. "
+            "The worker is idle and will not send alerts until configured.",
+            ", ".join(missing),
+        )
+        # Keep an initial cloud deployment alive while the owner adds secrets.
+        # Updating Railway Variables triggers a fresh deployment with the new values.
+        await asyncio.Event().wait()
+
     settings = Settings.from_env()
     database = Database(settings.database_path)
     database.initialize()
