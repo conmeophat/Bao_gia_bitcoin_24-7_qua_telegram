@@ -5,6 +5,7 @@ import logging
 import sys
 
 import aiohttp
+from dotenv import load_dotenv
 
 from config import Settings
 from database import Database
@@ -22,6 +23,7 @@ def configure_logging() -> None:
 
 
 async def run() -> None:
+    load_dotenv()
     settings = Settings.from_env()
     database = Database(settings.database_path)
     database.initialize()
