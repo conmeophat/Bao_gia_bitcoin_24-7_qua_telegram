@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime
 from decimal import Decimal
@@ -82,20 +83,26 @@ class TelegramBot:
     def help_text() -> str:
         return (
             "🤖 OKX BITCOIN ALERT ENGINE\n\n"
-            "Đặt ngưỡng giá trực tiếp bằng các lệnh:\n"
-            "/below 60000  — báo khi BTC ≤ 60.000 USDT\n"
-            "/above 70000  — báo khi BTC ≥ 70.000 USDT\n\n"
+            "Đặt nhiều mức giá DCA trong cùng một lệnh:\n"
+            "/below 65000 64000 63000 62000\n"
+            "/below 65000,64000,63000,62000\n"
+            "→ Tạo nhiều ngưỡng báo khi giá BTC ≤ từng mức.\n\n"
+            "/above 70000 71000 72000\n"
+            "/above 70000,71000,72000\n"
+            "→ Tạo nhiều ngưỡng báo khi giá BTC ≥ từng mức.\n\n"
+            "Mỗi lệnh tối đa 100 mức; hệ thống hỗ trợ tối đa 1.000 cảnh báo đang bật.\n"
+            "Khi nhập danh sách, hãy dùng số liền, không dùng dấu phân cách hàng nghìn.\n\n"
             "Các lệnh quản lý:\n"
             "/price        — giá OKX gần nhất\n"
-            "/list         — danh sách ngưỡng\n"
+            "/list hoặc /levels — xem các ngưỡng, chia nhóm trên/dưới\n"
             "/pause 1      — tạm dừng ngưỡng số 1\n"
             "/resume 1     — bật lại ngưỡng số 1\n"
             "/delete 1     — xóa ngưỡng số 1\n"
             "/status       — tình trạng kết nối engine\n"
             "/help         — hướng dẫn này\n\n"
             "Giá sử dụng: OKX Spot BTC-USDT, trường last.\n"
-            "Một ngưỡng chỉ báo một lần khi đi vào vùng điều kiện; "
-            "giá phải quay ra ngoài vùng rồi đi vào lại thì mới báo lần tiếp theo."
+            "Mỗi ngưỡng chỉ báo một lần cho mỗi lần giá đi vào vùng điều kiện; "
+            "giá phải quay ra ngoài vùng rồi đi vào lại thì ngưỡng mới được kích hoạt lại."
         )
 
     @staticmethod
@@ -109,6 +116,42 @@ class TelegramBot:
         if alert_id <= 0:
             raise ValueError("Mã cảnh báo không hợp lệ.")
         return alert_id
+
+    @staticmethod
+    def _parse_thresholds(raw: str) -> list[Decimal]:
+        """Accept one or many thresholds separated by spaces, commas or semicolons."""
+        raw = raw.strip()
+        if not raw:
+            raise ValueError(
+                "Bạn chưa nhập giá. Ví dụ: /below 65000 64000 63000"
+            )
+
+        if ";" in raw:
+            values = [item.strip() for item in raw.split(";") if item.strip()]
+        elif any(char.isspace() for char in raw):
+            # Whitespace-separated tokens allow formatted single values like 60,000.
+            values = [item.strip().rstrip(",") for item in raw.split() if item.strip()]
+        elif "," in raw:
+            if re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", raw):
+                values = [raw]
+            else:
+                values = [item.strip() for item in raw.split(",") if item.strip()]
+        else:
+            values = [raw]
+
+        if not values:
+            raise ValueError("Không tìm thấy mức giá hợp lệ.")
+        if len(values) > 100:
+            raise ValueError("Mỗi lệnh chỉ nhận tối đa 100 mức giá.")
+
+        parsed: list[Decimal] = []
+        seen: set[Decimal] = set()
+        for value in values:
+            price = parse_price(value)
+            if price not in seen:
+                parsed.append(price)
+                seen.add(price)
+        return parsed
 
     def _price_description(self) -> str:
         status = self.engine.status_snapshot()
@@ -141,34 +184,62 @@ class TelegramBot:
             return
 
         if command in {"/below", "/above"}:
-            if len(parts) != 2:
-                await self.send_message(
-                    self.allowed_chat_id,
-                    f"Cú pháp: {command} 60000\nVí dụ: {command} 60000",
-                )
-                return
-            if self.database.count_active_alerts() >= 100:
-                await self.send_message(
-                    self.allowed_chat_id,
-                    "Bạn đã đạt giới hạn 100 cảnh báo đang bật. Hãy tạm dừng hoặc xóa bớt.",
-                )
-                return
-
+            raw_values = text.strip().partition(" ")[2]
             try:
-                threshold = parse_price(parts[1])
+                thresholds = self._parse_thresholds(raw_values)
             except ValueError as exc:
                 await self.send_message(self.allowed_chat_id, str(exc))
                 return
 
             direction = "below" if command == "/below" else "above"
-            alert = self.database.create_alert(direction, threshold)
+            existing_active = {
+                Decimal(alert["threshold"])
+                for alert in self.database.list_alerts(active_only=True)
+                if alert["direction"] == direction
+            }
+            new_thresholds = [
+                threshold for threshold in thresholds
+                if threshold not in existing_active
+            ]
+            if not new_thresholds:
+                await self.send_message(
+                    self.allowed_chat_id,
+                    "ℹ️ Tất cả mức giá bạn nhập đã tồn tại và đang bật. "
+                    "Không tạo cảnh báo trùng.",
+                )
+                return
+
+            active_count = self.database.count_active_alerts()
+            available_slots = 1000 - active_count
+            if available_slots <= 0:
+                await self.send_message(
+                    self.allowed_chat_id,
+                    "Bạn đã đạt giới hạn 1.000 cảnh báo đang bật. "
+                    "Hãy tạm dừng hoặc xóa bớt cảnh báo cũ.",
+                )
+                return
+            if len(new_thresholds) > available_slots:
+                await self.send_message(
+                    self.allowed_chat_id,
+                    f"Chỉ còn chỗ cho {available_slots} cảnh báo đang bật. "
+                    "Hãy giảm số mức giá trong lệnh hoặc tạm dừng cảnh báo cũ.",
+                )
+                return
+
+            created = self.database.create_alerts(direction, new_thresholds)
             await self.engine.evaluate_current_price()
             comparator = "≤" if direction == "below" else "≥"
+            price_lines = [
+                f"#{alert['id']}  BTC {comparator} "
+                f"{format_price(Decimal(alert['threshold']))} USDT"
+                for alert in created
+            ]
             await self.send_message(
                 self.allowed_chat_id,
-                f"✅ Đã tạo cảnh báo #{alert['id']}\n"
-                f"BTC-USDT {comparator} {format_price(threshold)} USDT\n"
-                "Hệ thống sẽ kiểm tra giá OKX liên tục.",
+                f"✅ Đã tạo {len(created)} ngưỡng "
+                f"{'phía dưới' if direction == 'below' else 'phía trên'}\n"
+                + "\n".join(price_lines)
+                + "\n\nTừng mức sẽ được theo dõi độc lập trên OKX Spot BTC-USDT.",
             )
             return
 
@@ -178,31 +249,68 @@ class TelegramBot:
             )
             return
 
-        if command == "/list":
+        if command in {"/list", "/levels"}:
             alerts = self.database.list_alerts()
             if not alerts:
                 await self.send_message(
                     self.allowed_chat_id,
-                    "Bạn chưa tạo ngưỡng nào. Ví dụ: /below 60000",
+                    "Bạn chưa tạo ngưỡng nào. Ví dụ: /below 65000 64000 63000",
                 )
                 return
 
-            lines = ["📋 DANH SÁCH CẢNH BÁO"]
-            for alert in alerts:
-                comparator = "≤" if alert["direction"] == "below" else "≥"
-                state = "ĐANG BẬT" if alert["active"] else "ĐÃ TẠM DỪNG"
-                trigger_state = (
-                    "đang trong vùng đã báo"
-                    if alert["triggered"]
-                    else "chờ điều kiện"
-                )
-                lines.append(
-                    f"#{alert['id']}  BTC {comparator} "
-                    f"{format_price(Decimal(alert['threshold']))} USDT\n"
-                    f"   {state} · {trigger_state} · "
-                    f"đã báo {alert['trigger_count']} lần"
-                )
-            await self.send_message(self.allowed_chat_id, "\n".join(lines))
+            groups = [
+                (
+                    "📉 NGƯỠNG PHÍA DƯỚI (BTC ≤ MỨC GIÁ)",
+                    sorted(
+                        [a for a in alerts if a["direction"] == "below"],
+                        key=lambda a: Decimal(a["threshold"]),
+                        reverse=True,
+                    ),
+                    "≤",
+                ),
+                (
+                    "📈 NGƯỠNG PHÍA TRÊN (BTC ≥ MỨC GIÁ)",
+                    sorted(
+                        [a for a in alerts if a["direction"] == "above"],
+                        key=lambda a: Decimal(a["threshold"]),
+                    ),
+                    "≥",
+                ),
+            ]
+
+            lines = [
+                f"📋 DANH SÁCH CẢNH BÁO ({len(alerts)} mức, "
+                f"{self.database.count_active_alerts()} đang bật)"
+            ]
+            for heading, items, comparator in groups:
+                if not items:
+                    continue
+                lines.append("")
+                lines.append(heading)
+                for alert in items:
+                    state = "🟢" if alert["active"] else "⏸"
+                    trigger_state = "đã kích hoạt" if alert["triggered"] else "đang chờ"
+                    lines.append(
+                        f"{state} #{alert['id']}  {comparator} "
+                        f"{format_price(Decimal(alert['threshold']))} USDT"
+                        f" · {trigger_state} · {alert['trigger_count']} lần báo"
+                    )
+
+            chunks: list[str] = []
+            current = ""
+            for line in lines:
+                candidate = f"{current}\n{line}" if current else line
+                if len(candidate) > 3500 and current:
+                    chunks.append(current)
+                    current = line
+                else:
+                    current = candidate
+            if current:
+                chunks.append(current)
+
+            for index, chunk in enumerate(chunks, start=1):
+                suffix = f"\n\n(Phần {index}/{len(chunks)})" if len(chunks) > 1 else ""
+                await self.send_message(self.allowed_chat_id, chunk + suffix)
             return
 
         if command in {"/pause", "/resume", "/delete"}:
